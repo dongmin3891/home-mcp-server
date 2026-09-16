@@ -28,6 +28,8 @@ spec:
               value: "3000"
             - name: HOST
               value: "0.0.0.0"
+            - name: IWTC_API_BASE_URL
+              value: "http://iwtc-backend.iwtc.svc.cluster.local"
             - name: MCP_API_KEY
               valueFrom:
                 secretKeyRef:

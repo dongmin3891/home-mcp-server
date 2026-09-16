@@ -16,3 +16,7 @@ spec:
                 name: home-mcp-server
                 port:
                   number: 80
+  tls:
+    - hosts:
+        - mcp.ddongmy.com
+      secretName: home-mcp-server-tls

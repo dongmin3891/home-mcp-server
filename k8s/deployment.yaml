@@ -30,6 +30,12 @@ spec:
               value: "0.0.0.0"
             - name: IWTC_API_BASE_URL
               value: "http://iwtc-backend.iwtc.svc.cluster.local"
+            - name: IWTC_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: home-mcp-server-secrets
+                  key: IWTC_ACCESS_TOKEN
+                  optional: true
             - name: MCP_API_KEY
               valueFrom:
                 secretKeyRef:

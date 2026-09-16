@@ -1,0 +1,67 @@
+name: Build and Push Image
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "k8s/**"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Update Kubernetes image tag
+        run: |
+          sed -i "s|image: ghcr.io/dongmin3891/home-mcp-server:.*|image: ghcr.io/dongmin3891/home-mcp-server:${GITHUB_SHA}|" k8s/deployment.yaml
+
+      - name: Commit Kubernetes manifest
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add k8s/deployment.yaml
+
+          if git diff --cached --quiet; then
+            echo "No manifest changes"
+            exit 0
+          fi
+
+          git commit -m "ops: deploy ${GITHUB_SHA}"
+          git push

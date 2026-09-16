@@ -35,6 +35,12 @@ spec:
                 secretKeyRef:
                   name: home-mcp-server-secrets
                   key: MCP_API_KEY
+            - name: PEXELS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: home-mcp-server-secrets
+                  key: PEXELS_API_KEY
+                  optional: true
           readinessProbe:
             httpGet:
               path: /healthz

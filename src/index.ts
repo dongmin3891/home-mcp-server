@@ -7,8 +7,13 @@ import * as z from 'zod/v4';
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
 const mcpApiKey = process.env.MCP_API_KEY ?? '';
+const pexelsApiKey = process.env.PEXELS_API_KEY ?? '';
 const iwtcApiBaseUrl =
   process.env.IWTC_API_BASE_URL ?? 'http://iwtc-backend.iwtc.svc.cluster.local';
+
+const PEXELS_API_BASE_URL = 'https://api.pexels.com';
+const PEXELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const PEXELS_ATTRIBUTION_URL = 'https://www.pexels.com';
 
 if (!mcpApiKey) {
   throw new Error('MCP_API_KEY environment variable is required');
@@ -40,6 +45,73 @@ interface IwtcWorldCupPage {
   totalPages: number;
 }
 
+interface PexelsPhoto {
+  id: number;
+  width: number;
+  height: number;
+  url: string;
+  photographer: string;
+  photographer_url: string;
+  photographer_id: number;
+  avg_color: string | null;
+  src: {
+    original: string;
+    large2x: string;
+    large: string;
+    medium: string;
+    small: string;
+    portrait: string;
+    landscape: string;
+    tiny: string;
+  };
+  alt: string;
+}
+
+interface PexelsSearchResponse {
+  total_results: number;
+  page: number;
+  per_page: number;
+  photos: PexelsPhoto[];
+}
+
+interface PexelsRateLimit {
+  limit: number | null;
+  remaining: number | null;
+  resetAtUnix: number | null;
+}
+
+interface PexelsSearchResult {
+  query: string;
+  totalResults: number;
+  attribution: {
+    provider: 'Pexels';
+    providerUrl: string;
+    displayText: 'Photos provided by Pexels';
+  };
+  rateLimit: PexelsRateLimit;
+  photos: Array<{
+    id: number;
+    width: number;
+    height: number;
+    imageUrl: string;
+    previewUrl: string;
+    pexelsUrl: string;
+    photographer: string;
+    photographerUrl: string;
+    photographerId: number;
+    alt: string;
+    avgColor: string | null;
+    attributionText: string;
+  }>;
+}
+
+interface CacheEntry<T> {
+  expiresAt: number;
+  value: T;
+}
+
+const pexelsSearchCache = new Map<string, CacheEntry<PexelsSearchResult>>();
+
 function isAuthorized(authorization: string | undefined): boolean {
   if (!authorization?.startsWith('Bearer ')) {
     return false;
@@ -69,6 +141,114 @@ async function fetchIwtcJson<T>(path: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+function normalizePexelsQuery(query: string): string {
+  return query.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function parseRateLimitHeader(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function searchPexelsPhotos(input: {
+  query: string;
+  count: number;
+  orientation?: 'landscape' | 'portrait' | 'square';
+  locale: string;
+}): Promise<PexelsSearchResult> {
+  if (!pexelsApiKey) {
+    throw new Error('PEXELS_API_KEY is not configured');
+  }
+
+  const normalizedQuery = normalizePexelsQuery(input.query);
+  const cacheKey = JSON.stringify({
+    query: normalizedQuery,
+    count: input.count,
+    orientation: input.orientation ?? null,
+    locale: input.locale,
+  });
+  const cached = pexelsSearchCache.get(cacheKey);
+
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  if (cached) {
+    pexelsSearchCache.delete(cacheKey);
+  }
+
+  const url = new URL('/v1/search', PEXELS_API_BASE_URL);
+  url.searchParams.set('query', normalizedQuery);
+  url.searchParams.set('per_page', String(input.count));
+  url.searchParams.set('page', '1');
+  url.searchParams.set('locale', input.locale);
+
+  if (input.orientation) {
+    url.searchParams.set('orientation', input.orientation);
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      accept: 'application/json',
+      Authorization: pexelsApiKey,
+    },
+    signal: AbortSignal.timeout(8_000),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    if (response.status === 429) {
+      throw new Error('Pexels API rate limit exceeded');
+    }
+    throw new Error(
+      `Pexels API request failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+    );
+  }
+
+  const data = (await response.json()) as PexelsSearchResponse;
+  const rateLimit: PexelsRateLimit = {
+    limit: parseRateLimitHeader(response.headers.get('x-ratelimit-limit')),
+    remaining: parseRateLimitHeader(response.headers.get('x-ratelimit-remaining')),
+    resetAtUnix: parseRateLimitHeader(response.headers.get('x-ratelimit-reset')),
+  };
+
+  const result: PexelsSearchResult = {
+    query: normalizedQuery,
+    totalResults: data.total_results,
+    attribution: {
+      provider: 'Pexels',
+      providerUrl: PEXELS_ATTRIBUTION_URL,
+      displayText: 'Photos provided by Pexels',
+    },
+    rateLimit,
+    photos: data.photos.map((photo) => ({
+      id: photo.id,
+      width: photo.width,
+      height: photo.height,
+      imageUrl: photo.src.large2x,
+      previewUrl: photo.src.medium,
+      pexelsUrl: photo.url,
+      photographer: photo.photographer,
+      photographerUrl: photo.photographer_url,
+      photographerId: photo.photographer_id,
+      alt: photo.alt,
+      avgColor: photo.avg_color,
+      attributionText: `Photo by ${photo.photographer} on Pexels`,
+    })),
+  };
+
+  pexelsSearchCache.set(cacheKey, {
+    expiresAt: Date.now() + PEXELS_CACHE_TTL_MS,
+    value: result,
+  });
+
+  return result;
 }
 
 function buildMcpServer(): McpServer {
@@ -147,6 +327,51 @@ function buildMcpServer(): McpServer {
     },
   );
 
+  server.registerTool(
+    'iwtc_search_images',
+    {
+      description:
+        'Search Pexels for candidate photos for an IWTC world cup. Preserve the returned Pexels and photographer attribution metadata when displaying or saving selected images.',
+      inputSchema: z.object({
+        query: z.string().trim().min(1).max(100),
+        count: z.number().int().min(1).max(40).default(16),
+        orientation: z.enum(['landscape', 'portrait', 'square']).optional(),
+        locale: z.string().trim().min(2).max(10).default('en-US'),
+      }),
+    },
+    async ({ query, count, orientation, locale }) => {
+      try {
+        const result = await searchPexelsPhotos({
+          query,
+          count,
+          orientation,
+          locale,
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Failed to search Pexels images: ${message}`,
+            },
+          ],
+        };
+      }
+    },
+  );
+
   return server;
 }
 
@@ -184,6 +409,9 @@ server.listen(port, host, () => {
   console.log(`[home-mcp-server] listening on http://${host}:${port}`);
   console.log('[home-mcp-server] MCP endpoint: /mcp (Bearer auth required)');
   console.log(`[home-mcp-server] IWTC API: ${iwtcApiBaseUrl}`);
+  console.log(
+    `[home-mcp-server] Pexels integration: ${pexelsApiKey ? 'configured' : 'not configured'}`,
+  );
 });
 
 async function shutdown(signal: string) {

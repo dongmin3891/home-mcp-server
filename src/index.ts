@@ -8,7 +8,7 @@ const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
 const mcpApiKey = process.env.MCP_API_KEY ?? '';
 const pexelsApiKey = process.env.PEXELS_API_KEY ?? '';
-const iwtcAccessToken = process.env.IWTC_ACCESS_TOKEN ?? '';
+const iwtcAutomationToken = process.env.IWTC_AUTOMATION_TOKEN ?? '';
 const iwtcApiBaseUrl =
   process.env.IWTC_API_BASE_URL ?? 'http://iwtc-backend.iwtc.svc.cluster.local';
 
@@ -158,18 +158,18 @@ async function fetchIwtcJson<T>(path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function fetchIwtcAuthenticated<T>(
+async function fetchIwtcAutomation<T>(
   path: string,
   init: RequestInit,
 ): Promise<T> {
-  if (!iwtcAccessToken) {
-    throw new Error('IWTC_ACCESS_TOKEN is not configured');
+  if (!iwtcAutomationToken) {
+    throw new Error('IWTC_AUTOMATION_TOKEN is not configured');
   }
 
   const url = new URL(path, iwtcApiBaseUrl);
   const headers = new Headers(init.headers);
   headers.set('accept', 'application/json');
-  headers.set('access-token', iwtcAccessToken);
+  headers.set('x-iwtc-automation-token', iwtcAutomationToken);
 
   const response = await fetch(url, {
     ...init,
@@ -180,7 +180,7 @@ async function fetchIwtcAuthenticated<T>(
   if (!response.ok) {
     const body = await response.text();
     throw new Error(
-      `IWTC authenticated API request failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
+      `IWTC automation API request failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`,
     );
   }
 
@@ -370,21 +370,24 @@ async function createIwtcDraft(input: {
 }) {
   const preparedImages = await Promise.all(input.candidates.map(downloadPexelsImage));
 
-  const worldCupResponse = await fetchIwtcAuthenticated<IwtcApiResponse<number>>(
-    '/api/me/game-manage/world-cups',
+  const worldCupResponse = await fetchIwtcAutomation<IwtcApiResponse<number>>(
+    '/api/internal/automation/world-cups',
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         title: input.title,
         description: input.description,
-        visibleType: 'PRIVATE',
       }),
     },
   );
 
   const worldCupId = worldCupResponse.data;
-  const createdCandidates: Array<{ candidateId: number; name: string; pexelsPhotoId: number }> = [];
+  const createdCandidates: Array<{
+    candidateId: number;
+    name: string;
+    pexelsPhotoId: number;
+  }> = [];
 
   for (const image of preparedImages) {
     const form = new FormData();
@@ -397,8 +400,8 @@ async function createIwtcDraft(input: {
     );
 
     try {
-      const candidateResponse = await fetchIwtcAuthenticated<IwtcApiResponse<number>>(
-        `/api/me/game-contents-manage/world-cups/${worldCupId}/contents/static`,
+      const candidateResponse = await fetchIwtcAutomation<IwtcApiResponse<number>>(
+        `/api/internal/automation/world-cups/${worldCupId}/contents/static`,
         {
           method: 'POST',
           body: form,
@@ -491,7 +494,12 @@ function buildMcpServer(): McpServer {
         const message = error instanceof Error ? error.message : String(error);
         return {
           isError: true,
-          content: [{ type: 'text', text: `Failed to list recent IWTC world cups: ${message}` }],
+          content: [
+            {
+              type: 'text',
+              text: `Failed to list recent IWTC world cups: ${message}`,
+            },
+          ],
         };
       }
     },
@@ -511,7 +519,12 @@ function buildMcpServer(): McpServer {
     },
     async ({ query, count, orientation, locale }) => {
       try {
-        const result = await searchPexelsPhotos({ query, count, orientation, locale });
+        const result = await searchPexelsPhotos({
+          query,
+          count,
+          orientation,
+          locale,
+        });
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
@@ -520,7 +533,12 @@ function buildMcpServer(): McpServer {
         const message = error instanceof Error ? error.message : String(error);
         return {
           isError: true,
-          content: [{ type: 'text', text: `Failed to search Pexels images: ${message}` }],
+          content: [
+            {
+              type: 'text',
+              text: `Failed to search Pexels images: ${message}`,
+            },
+          ],
         };
       }
     },
@@ -530,7 +548,7 @@ function buildMcpServer(): McpServer {
     'iwtc_create_worldcup_draft',
     {
       description:
-        'Create a PRIVATE IWTC world cup draft from selected Pexels images. Downloads only images.pexels.com URLs, uploads them to IWTC storage, and returns an attribution manifest. Do not publish until attribution metadata persistence/UI support is implemented.',
+        'Create a PRIVATE IWTC world cup draft from selected Pexels images through the internal automation API. Downloads only images.pexels.com URLs, uploads them to IWTC storage, and returns an attribution manifest. Do not publish until attribution metadata persistence/UI support is implemented.',
       inputSchema: z.object({
         title: z.string().trim().min(1).max(100),
         description: z.string().trim().max(100).default(''),
@@ -551,7 +569,11 @@ function buildMcpServer(): McpServer {
     },
     async ({ title, description, candidates }) => {
       try {
-        const result = await createIwtcDraft({ title, description, candidates });
+        const result = await createIwtcDraft({
+          title,
+          description,
+          candidates,
+        });
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
           structuredContent: result,
@@ -560,7 +582,12 @@ function buildMcpServer(): McpServer {
         const message = error instanceof Error ? error.message : String(error);
         return {
           isError: true,
-          content: [{ type: 'text', text: `Failed to create IWTC draft: ${message}` }],
+          content: [
+            {
+              type: 'text',
+              text: `Failed to create IWTC draft: ${message}`,
+            },
+          ],
         };
       }
     },
@@ -603,7 +630,9 @@ server.listen(port, host, () => {
   console.log(`[home-mcp-server] listening on http://${host}:${port}`);
   console.log('[home-mcp-server] MCP endpoint: /mcp (Bearer auth required)');
   console.log(`[home-mcp-server] IWTC API: ${iwtcApiBaseUrl}`);
-  console.log(`[home-mcp-server] IWTC write auth: ${iwtcAccessToken ? 'configured' : 'not configured'}`);
+  console.log(
+    `[home-mcp-server] IWTC automation auth: ${iwtcAutomationToken ? 'configured' : 'not configured'}`,
+  );
   console.log(
     `[home-mcp-server] Pexels integration: ${pexelsApiKey ? 'configured' : 'not configured'}`,
   );

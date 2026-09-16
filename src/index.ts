@@ -6,7 +6,7 @@ import * as z from 'zod/v4';
 
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
-const mcpApiKey = process.env.MCP_API_KEY;
+const mcpApiKey = process.env.MCP_API_KEY ?? '';
 
 if (!mcpApiKey) {
   throw new Error('MCP_API_KEY environment variable is required');

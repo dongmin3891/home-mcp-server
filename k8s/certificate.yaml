@@ -1,0 +1,12 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: home-mcp-server-cert
+  namespace: mcp
+spec:
+  secretName: home-mcp-server-tls
+  dnsNames:
+    - mcp.ddongmy.com
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt-prod

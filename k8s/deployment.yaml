@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: home-mcp-server
+  namespace: mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: home-mcp-server
+  template:
+    metadata:
+      labels:
+        app: home-mcp-server
+    spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+      containers:
+        - name: home-mcp-server
+          image: ghcr.io/dongmin3891/home-mcp-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: PORT
+              value: "3000"
+            - name: HOST
+              value: "0.0.0.0"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi

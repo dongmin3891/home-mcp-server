@@ -393,9 +393,13 @@ async function createIwtcDraft(input: {
     const form = new FormData();
     form.set('contentsName', image.name);
     form.set('visibleType', 'PRIVATE');
+    const imageBuffer = image.bytes.buffer.slice(
+      image.bytes.byteOffset,
+      image.bytes.byteOffset + image.bytes.byteLength,
+    ) as ArrayBuffer;
     form.set(
       'file',
-      new Blob([image.bytes], { type: image.contentType }),
+      new Blob([imageBuffer], { type: image.contentType }),
       image.fileName,
     );
 

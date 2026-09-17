@@ -18,7 +18,7 @@ spec:
         - name: ghcr-secret
       containers:
         - name: home-mcp-server
-          image: ghcr.io/dongmin3891/home-mcp-server:b0bcf2c5837b6d7193aa2ccce9fe3c5afd099fd4
+          image: ghcr.io/dongmin3891/home-mcp-server:bb822ecac4410fe0855d06838799cf20fa83da35
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000

@@ -47,6 +47,13 @@ interface IwtcWorldCupPage {
   totalPages: number;
 }
 
+interface IwtcPublishedWorldCup {
+  worldCupId: number;
+  title: string;
+  candidateCount: number;
+  status: 'PUBLIC';
+}
+
 interface PexelsPhoto {
   id: number;
   width: number;
@@ -448,9 +455,19 @@ async function createIwtcDraft(input: {
         attributionText: image.attributionText,
       })),
     },
-    publishBlockedReason:
-      'Pexels attribution metadata is persisted in IWTC, but the frontend does not display it yet. Keep this draft PRIVATE until attribution UI display is implemented.',
+    publishReady: true,
   };
+}
+
+async function publishIwtcWorldCup(worldCupId: number): Promise<IwtcPublishedWorldCup> {
+  const response = await fetchIwtcAutomation<IwtcApiResponse<IwtcPublishedWorldCup>>(
+    `/api/internal/automation/world-cups/${worldCupId}/publish`,
+    {
+      method: 'POST',
+    },
+  );
+
+  return response.data;
 }
 
 function buildMcpServer(): McpServer {
@@ -557,7 +574,7 @@ function buildMcpServer(): McpServer {
     'iwtc_create_worldcup_draft',
     {
       description:
-        'Create a PRIVATE IWTC world cup draft from selected Pexels images through the internal automation API. Downloads only images.pexels.com URLs, uploads them to IWTC storage, persists source attribution metadata, and returns an attribution manifest. Do not publish until attribution UI display is implemented.',
+        'Create a PRIVATE IWTC world cup draft from selected Pexels images through the internal automation API. Downloads only images.pexels.com URLs, uploads them to IWTC storage, persists source attribution metadata, and returns an attribution manifest.',
       inputSchema: z.object({
         title: z.string().trim().min(1).max(100),
         description: z.string().trim().max(100).default(''),
@@ -595,6 +612,37 @@ function buildMcpServer(): McpServer {
             {
               type: 'text',
               text: `Failed to create IWTC draft: ${message}`,
+            },
+          ],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    'iwtc_publish_worldcup',
+    {
+      description:
+        'Publish an IWTC automation draft. The IWTC backend verifies that the draft belongs to the automation member, has at least two active candidates, and every candidate has complete persisted Pexels attribution. Publication changes the world cup and all active candidates to PUBLIC in one database transaction.',
+      inputSchema: z.object({
+        worldCupId: z.number().int().positive(),
+      }),
+    },
+    async ({ worldCupId }) => {
+      try {
+        const result = await publishIwtcWorldCup(worldCupId);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: `Failed to publish IWTC world cup: ${message}`,
             },
           ],
         };

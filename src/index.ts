@@ -393,6 +393,11 @@ async function createIwtcDraft(input: {
     const form = new FormData();
     form.set('contentsName', image.name);
     form.set('visibleType', 'PRIVATE');
+    form.set('sourceProvider', 'PEXELS');
+    form.set('sourceExternalId', String(image.pexelsPhotoId));
+    form.set('sourceUrl', image.pexelsUrl);
+    form.set('sourceAuthor', image.photographer);
+    form.set('sourceAuthorUrl', image.photographerUrl);
     const imageBuffer = image.bytes.buffer.slice(
       image.bytes.byteOffset,
       image.bytes.byteOffset + image.bytes.byteLength,
@@ -444,7 +449,7 @@ async function createIwtcDraft(input: {
       })),
     },
     publishBlockedReason:
-      'Pexels attribution metadata is returned by this tool but is not yet persisted in the IWTC database. Keep this draft PRIVATE until attribution persistence and UI display are implemented.',
+      'Pexels attribution metadata is persisted in IWTC, but the frontend does not display it yet. Keep this draft PRIVATE until attribution UI display is implemented.',
   };
 }
 
@@ -552,7 +557,7 @@ function buildMcpServer(): McpServer {
     'iwtc_create_worldcup_draft',
     {
       description:
-        'Create a PRIVATE IWTC world cup draft from selected Pexels images through the internal automation API. Downloads only images.pexels.com URLs, uploads them to IWTC storage, and returns an attribution manifest. Do not publish until attribution metadata persistence/UI support is implemented.',
+        'Create a PRIVATE IWTC world cup draft from selected Pexels images through the internal automation API. Downloads only images.pexels.com URLs, uploads them to IWTC storage, persists source attribution metadata, and returns an attribution manifest. Do not publish until attribution UI display is implemented.',
       inputSchema: z.object({
         title: z.string().trim().min(1).max(100),
         description: z.string().trim().max(100).default(''),

@@ -16,6 +16,8 @@ const PEXELS_API_BASE_URL = 'https://api.pexels.com';
 const PEXELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PEXELS_ATTRIBUTION_URL = 'https://www.pexels.com';
 const MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024;
+const PEXELS_IMAGE_DOWNLOAD_ATTEMPTS = 3;
+const PEXELS_IMAGE_RETRY_BASE_DELAY_MS = 500;
 
 if (!mcpApiKey) {
   throw new Error('MCP_API_KEY environment variable is required');
@@ -134,6 +136,32 @@ interface PreparedDraftImage {
 
 const pexelsSearchCache = new Map<string, CacheEntry<PexelsSearchResult>>();
 
+function formatError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+
+  const cause = error.cause;
+  if (!cause) {
+    return error.message;
+  }
+
+  const causeCode =
+    typeof cause === 'object' &&
+    cause !== null &&
+    'code' in cause &&
+    typeof cause.code === 'string'
+      ? cause.code
+      : null;
+  const causeMessage = cause instanceof Error ? cause.message : String(cause);
+
+  return `${error.message} (cause: ${causeCode ? `${causeCode}: ` : ''}${causeMessage})`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isAuthorized(authorization: string | undefined): boolean {
   if (!authorization?.startsWith('Bearer ')) {
     return false;
@@ -178,11 +206,19 @@ async function fetchIwtcAutomation<T>(
   headers.set('accept', 'application/json');
   headers.set('x-iwtc-automation-token', iwtcAutomationToken);
 
-  const response = await fetch(url, {
-    ...init,
-    headers,
-    signal: AbortSignal.timeout(15_000),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    throw new Error(
+      `IWTC automation API fetch failed for ${path}: ${formatError(error)}`,
+      { cause: error },
+    );
+  }
 
   if (!response.ok) {
     const body = await response.text();
@@ -322,45 +358,74 @@ async function downloadPexelsImage(input: {
   validatePexelsUrl(input.pexelsUrl, 'www.pexels.com');
   validatePexelsUrl(input.photographerUrl, 'www.pexels.com');
 
-  const response = await fetch(imageUrl, {
-    headers: { accept: 'image/jpeg,image/png,image/gif' },
-    redirect: 'error',
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to download Pexels image ${input.pexelsPhotoId}: ${response.status} ${response.statusText}`,
-    );
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= PEXELS_IMAGE_DOWNLOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(imageUrl, {
+        headers: { accept: 'image/jpeg,image/png,image/gif' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status} ${response.statusText}`,
+        );
+      }
+
+      const declaredLength = Number(response.headers.get('content-length') ?? '0');
+      if (declaredLength > MAX_REMOTE_IMAGE_BYTES) {
+        throw new Error('image exceeds 10MB');
+      }
+
+      const rawContentType = response.headers.get('content-type')?.split(';')[0]?.trim();
+      if (!['image/jpeg', 'image/png', 'image/gif'].includes(rawContentType ?? '')) {
+        throw new Error(
+          `unsupported content type: ${rawContentType ?? 'unknown'}`,
+        );
+      }
+
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength === 0 || bytes.byteLength > MAX_REMOTE_IMAGE_BYTES) {
+        throw new Error(`invalid image size: ${bytes.byteLength} bytes`);
+      }
+
+      const contentType = rawContentType as 'image/jpeg' | 'image/png' | 'image/gif';
+      const extension =
+        contentType === 'image/png' ? 'png' : contentType === 'image/gif' ? 'gif' : 'jpg';
+
+      return {
+        ...input,
+        attributionText: `Photo by ${input.photographer} on Pexels`,
+        bytes,
+        contentType,
+        fileName: `pexels-${input.pexelsPhotoId}.${extension}`,
+      };
+    } catch (error) {
+      lastError = error;
+
+      if (attempt >= PEXELS_IMAGE_DOWNLOAD_ATTEMPTS) {
+        break;
+      }
+
+      const retryDelayMs = PEXELS_IMAGE_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      console.warn('[home-mcp-server] Pexels image download failed; retrying', {
+        name: input.name,
+        pexelsPhotoId: input.pexelsPhotoId,
+        attempt,
+        maxAttempts: PEXELS_IMAGE_DOWNLOAD_ATTEMPTS,
+        retryDelayMs,
+        error: formatError(error),
+      });
+      await sleep(retryDelayMs);
+    }
   }
 
-  const declaredLength = Number(response.headers.get('content-length') ?? '0');
-  if (declaredLength > MAX_REMOTE_IMAGE_BYTES) {
-    throw new Error(`Pexels image ${input.pexelsPhotoId} exceeds 10MB`);
-  }
-
-  const rawContentType = response.headers.get('content-type')?.split(';')[0]?.trim();
-  if (!['image/jpeg', 'image/png', 'image/gif'].includes(rawContentType ?? '')) {
-    throw new Error(
-      `Unsupported image content type for Pexels image ${input.pexelsPhotoId}: ${rawContentType ?? 'unknown'}`,
-    );
-  }
-
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength === 0 || bytes.byteLength > MAX_REMOTE_IMAGE_BYTES) {
-    throw new Error(`Invalid image size for Pexels image ${input.pexelsPhotoId}`);
-  }
-
-  const contentType = rawContentType as 'image/jpeg' | 'image/png' | 'image/gif';
-  const extension =
-    contentType === 'image/png' ? 'png' : contentType === 'image/gif' ? 'gif' : 'jpg';
-
-  return {
-    ...input,
-    attributionText: `Photo by ${input.photographer} on Pexels`,
-    bytes,
-    contentType,
-    fileName: `pexels-${input.pexelsPhotoId}.${extension}`,
-  };
+  throw new Error(
+    `Pexels image download failed for "${input.name}" (${input.pexelsPhotoId}) after ${PEXELS_IMAGE_DOWNLOAD_ATTEMPTS} attempts: ${formatError(lastError)}`,
+    { cause: lastError },
+  );
 }
 
 async function createIwtcDraft(input: {
@@ -375,19 +440,33 @@ async function createIwtcDraft(input: {
     photographerUrl: string;
   }>;
 }) {
-  const preparedImages = await Promise.all(input.candidates.map(downloadPexelsImage));
+  let preparedImages: PreparedDraftImage[];
+  try {
+    preparedImages = await Promise.all(input.candidates.map(downloadPexelsImage));
+  } catch (error) {
+    throw new Error(`PEXELS_DOWNLOAD_FAILED: ${formatError(error)}`, {
+      cause: error,
+    });
+  }
 
-  const worldCupResponse = await fetchIwtcAutomation<IwtcApiResponse<number>>(
-    '/api/internal/automation/world-cups',
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        title: input.title,
-        description: input.description,
-      }),
-    },
-  );
+  let worldCupResponse: IwtcApiResponse<number>;
+  try {
+    worldCupResponse = await fetchIwtcAutomation<IwtcApiResponse<number>>(
+      '/api/internal/automation/world-cups',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          title: input.title,
+          description: input.description,
+        }),
+      },
+    );
+  } catch (error) {
+    throw new Error(`IWTC_DRAFT_CREATE_FAILED: ${formatError(error)}`, {
+      cause: error,
+    });
+  }
 
   const worldCupId = worldCupResponse.data;
   const createdCandidates: Array<{
@@ -429,9 +508,9 @@ async function createIwtcDraft(input: {
         pexelsPhotoId: image.pexelsPhotoId,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Draft ${worldCupId} was created but candidate upload failed after ${createdCandidates.length}/${preparedImages.length}: ${message}`,
+        `Draft ${worldCupId} was created but candidate upload failed after ${createdCandidates.length}/${preparedImages.length}: ${formatError(error)}`,
+        { cause: error },
       );
     }
   }
@@ -605,7 +684,13 @@ function buildMcpServer(): McpServer {
           structuredContent: result,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
+        console.error('[home-mcp-server] iwtc_create_worldcup_draft failed', {
+          title,
+          candidateCount: candidates.length,
+          error: message,
+          stack: error instanceof Error ? error.stack : undefined,
+        });
         return {
           isError: true,
           content: [
